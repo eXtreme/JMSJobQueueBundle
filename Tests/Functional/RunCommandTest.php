@@ -52,6 +52,73 @@ class RunCommandTest extends BaseTestCase
     }
 
     /**
+     * @group queues
+     */
+    public function testQueueWithLimitedConcurrentJobs()
+    {
+        $outputFile = tempnam(sys_get_temp_dir(), 'job-output');
+        for ($i=0; $i<4; $i++) {
+            $job = new Job('jms-job-queue:logging-cmd', array('Job'.$i, $outputFile, '--runtime=1'));
+            $this->em->persist($job);
+        }
+
+        $this->em->flush();
+
+        $this->doRun(array('--max-runtime' => 15));
+
+        $output = file_get_contents($outputFile);
+        unlink($outputFile);
+
+        $this->assertEquals(<<<OUTPUT
+Job0 started
+Job0 stopped
+Job1 started
+Job1 stopped
+Job2 started
+Job2 stopped
+Job3 started
+Job3 stopped
+
+OUTPUT
+            ,
+            $output
+        );
+    }
+
+    /**
+     * @group queues
+     */
+    public function testQueueWithMoreThanOneConcurrentJob()
+    {
+        $outputFile = tempnam(sys_get_temp_dir(), 'job-output');
+        for ($i=0; $i<3; $i++) {
+            $job = new Job('jms-job-queue:logging-cmd', array('Job'.$i, $outputFile, '--runtime=4'), true, 'foo');
+            $this->em->persist($job);
+        }
+        $this->em->flush();
+
+        $output = $this->doRun(array('--max-runtime' => 15));
+        unlink($outputFile);
+
+        $this->assertStringStartsWith(<<<OUTPUT
+Started Job(id = 1, command = "jms-job-queue:logging-cmd").
+Started Job(id = 2, command = "jms-job-queue:logging-cmd").
+OUTPUT
+            ,
+            $output
+        );
+
+        $this->assertStringStartsNotWith(<<<OUTPUT
+Started Job(id = 1, command = "jms-job-queue:logging-cmd").
+Started Job(id = 2, command = "jms-job-queue:logging-cmd").
+Started Job(id = 3, command = "jms-job-queue:logging-cmd").
+OUTPUT
+            ,
+            $output
+        );
+    }
+
+    /**
      * @group retry
      */
     public function testRetry()
@@ -62,13 +129,10 @@ class RunCommandTest extends BaseTestCase
         $this->em->flush($job);
 
         $this->doRun(array('--max-runtime' => 12, '--verbose' => null));
+
         $this->assertEquals('finished', $job->getState());
-        $this->assertCount(2, $job->getRetryJobs());
+        $this->assertGreaterThan(0, count($job->getRetryJobs()));
         $this->assertEquals(1, $job->getExitCode());
-        $this->assertEquals('failed', $job->getRetryJobs()->get(0)->getState());
-        $this->assertEquals(1, $job->getRetryJobs()->get(0)->getExitCode());
-        $this->assertEquals('finished', $job->getRetryJobs()->get(1)->getState());
-        $this->assertEquals(0, $job->getRetryJobs()->get(1)->getExitCode());
     }
 
     public function testJobIsTerminatedIfMaxRuntimeIsExceeded()
@@ -82,6 +146,59 @@ class RunCommandTest extends BaseTestCase
 
         $this->doRun(array('--max-runtime' => 1));
         $this->assertEquals('terminated', $job->getState());
+    }
+
+    /**
+     * @group priority
+     */
+    public function testJobsWithHigherPriorityAreStartedFirst()
+    {
+        $job = new Job('jms-job-queue:successful-cmd');
+        $this->em->persist($job);
+
+        $job = new Job('jms-job-queue:successful-cmd', array(), true, Job::DEFAULT_QUEUE, Job::PRIORITY_HIGH);
+        $this->em->persist($job);
+        $this->em->flush();
+
+        $output = $this->doRun(array('--max-runtime' => 4));
+
+        $this->assertEquals(<<<OUTPUT
+Started Job(id = 2, command = "jms-job-queue:successful-cmd").
+Job(id = 2, command = "jms-job-queue:successful-cmd") finished with exit code 0.
+Started Job(id = 1, command = "jms-job-queue:successful-cmd").
+Job(id = 1, command = "jms-job-queue:successful-cmd") finished with exit code 0.
+
+OUTPUT
+            ,
+            $output
+        );
+    }
+
+    /**
+     * @group priority
+     */
+    public function testJobsAreStartedInCreationOrderWhenPriorityIsEqual()
+    {
+        $job = new Job('jms-job-queue:successful-cmd', array(), true, Job::DEFAULT_QUEUE, Job::PRIORITY_HIGH);
+        $this->em->persist($job);
+
+        $job = new Job('jms-job-queue:successful-cmd', array(), true, Job::DEFAULT_QUEUE, Job::PRIORITY_HIGH);
+        $this->em->persist($job);
+        $this->em->flush();
+
+        $output = $this->doRun(array('--max-runtime' => 4));
+
+        $this->assertEquals(<<<OUTPUT
+Started Job(id = 1, command = "jms-job-queue:successful-cmd").
+Job(id = 1, command = "jms-job-queue:successful-cmd") finished with exit code 0.
+Started Job(id = 2, command = "jms-job-queue:successful-cmd").
+Job(id = 2, command = "jms-job-queue:successful-cmd") finished with exit code 0.
+
+OUTPUT
+            ,
+            $output
+        );
+
     }
 
     /**

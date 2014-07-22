@@ -27,8 +27,8 @@ use Symfony\Component\HttpKernel\Exception\FlattenException;
 /**
  * @ORM\Entity(repositoryClass = "JMS\JobQueueBundle\Entity\Repository\JobRepository")
  * @ORM\Table(name = "jms_jobs", indexes = {
- *     @ORM\Index(columns = {"command"}),
- *     @ORM\Index("job_runner", columns = {"executeAfter", "state"}),
+ *     @ORM\Index("cmd_search_index", columns = {"command"}),
+ *     @ORM\Index("sorting_index", columns = {"state", "priority", "id"}),
  * })
  * @ORM\ChangeTrackingPolicy("DEFERRED_EXPLICIT")
  *
@@ -75,11 +75,31 @@ class Job
      */
     const STATE_INCOMPLETE = 'incomplete';
 
+    /**
+     * State if an error occurs in the runner command.
+     *
+     * The runner command is the command that actually launches the individual
+     * jobs. If instead an error occurs in the job command, this will result
+     * in a state of FAILED.
+     */
+    const DEFAULT_QUEUE = 'default';
+    const MAX_QUEUE_LENGTH = 50;
+
+    const PRIORITY_LOW = -5;
+    const PRIORITY_DEFAULT = 0;
+    const PRIORITY_HIGH = 5;
+
     /** @ORM\Id @ORM\GeneratedValue(strategy = "AUTO") @ORM\Column(type = "bigint", options = {"unsigned": true}) */
     private $id;
 
-    /** @ORM\Column(type = "string") */
+    /** @ORM\Column(type = "string", length = 15) */
     private $state;
+
+    /** @ORM\Column(type = "string", length = Job::MAX_QUEUE_LENGTH) */
+    private $queue;
+
+    /** @ORM\Column(type = "smallint") */
+    private $priority = 0;
 
     /** @ORM\Column(type = "datetime", name="createdAt") */
     private $createdAt;
@@ -155,9 +175,9 @@ class Job
      */
     private $relatedEntities;
 
-    public static function create($command, array $args = array(), $confirmed = true)
+    public static function create($command, array $args = array(), $confirmed = true, $queue = self::DEFAULT_QUEUE, $priority = self::PRIORITY_DEFAULT)
     {
-        return new self($command, $args, $confirmed);
+        return new self($command, $args, $confirmed, $queue, $priority);
     }
 
     public static function isNonSuccessfulFinalState($state)
@@ -165,11 +185,20 @@ class Job
         return in_array($state, array(self::STATE_CANCELED, self::STATE_FAILED, self::STATE_INCOMPLETE, self::STATE_TERMINATED), true);
     }
 
-    public function __construct($command, array $args = array(), $confirmed = true)
+    public function __construct($command, array $args = array(), $confirmed = true, $queue = self::DEFAULT_QUEUE, $priority = self::PRIORITY_DEFAULT)
     {
+        if (trim($queue) === '') {
+            throw new \InvalidArgumentException('$queue must not be empty.');
+        }
+        if (strlen($queue) > self::MAX_QUEUE_LENGTH) {
+            throw new \InvalidArgumentException(sprintf('The maximum queue length is %d, but got "%s" (%d chars).', self::MAX_QUEUE_LENGTH, $queue, strlen($queue)));
+        }
+
         $this->command = $command;
         $this->args = $args;
         $this->state = $confirmed ? self::STATE_PENDING : self::STATE_NEW;
+        $this->queue = $queue;
+        $this->priority = $priority * -1;
         $this->createdAt = new \DateTime();
         $this->executeAfter = new \DateTime();
         $this->executeAfter = $this->executeAfter->modify('-1 second');
@@ -192,6 +221,7 @@ class Job
         $this->runtime = null;
         $this->memoryUsage = null;
         $this->memoryUsageReal = null;
+        $this->relatedEntities = new ArrayCollection();
     }
 
     public function getId()
@@ -202,6 +232,11 @@ class Job
     public function getState()
     {
         return $this->state;
+    }
+
+    public function getPriority()
+    {
+        return $this->priority * -1;
     }
 
     public function isStartable()
@@ -510,6 +545,11 @@ class Job
     public function getStackTrace()
     {
         return $this->stackTrace;
+    }
+
+    public function getQueue()
+    {
+        return $this->queue;
     }
 
     public function isNew()

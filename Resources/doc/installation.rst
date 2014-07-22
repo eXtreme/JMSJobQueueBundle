@@ -87,6 +87,20 @@ Then, update your dependencies using
 
     php composer.phar update
 
+And add the JMSDiExtraBundle and JMSAopBundle to your appKernel.php:
+
+.. code-block :: php
+    
+    <?php
+
+    // in AppKernel::registerBundles()
+    $bundles = array(
+        // ...
+        new JMS\DiExtraBundle\JMSDiExtraBundle($this),
+        new JMS\AopBundle\JMSAopBundle(),
+        // ...
+    );
+
 Typically, you would also want to add some access control restrictions for these
 actions. If you are using ``JMSSecurityExtraBundle`` this could look like this:
 
@@ -132,3 +146,15 @@ A sample supervisord config might look like this:
     the ``--max-runtime=seconds`` option).
 
 .. _supervisord: http://supervisord.org/
+
+Queues
+======================
+Mulitple queue support is enabled for 4 simultaneous job queues. 
+
+If your database has 5 queues pending the 5th queue will execute when one of the first 4 is out of jobs. 
+
+Queues are loaded based on the queue name you use when you create a job. This way queues can be created using your program easily.
+
+The queues will execute in alphabetical order according to your database DESC operation. 
+
+If you want to run an unlimited number of queues at one time (UNSAFE) pass -1 to the max-concurrent-queues parameter.
